@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Lançador sem instalação: aponta o sys.path para o src/ do próprio repositório."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from llm_sessoes.cli import main  # noqa: E402
+
+sys.exit(main())
