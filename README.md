@@ -181,8 +181,12 @@ Banco em `~/.local/share/llm-sessoes/sessoes.db` (sobrescreva com `LLM_SESSOES_D
 
 ## Testes
 
+Rode da raiz do repositório. O `PYTHONPATH=src` é necessário porque o pacote fica em `src/`
+e não é instalado.
+
 ```bash
-python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3 -m unittest discover -s tests -v          # sem os testes da TUI
+PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v # suíte completa (com Textual)
 ```
 
 ## Roadmap
