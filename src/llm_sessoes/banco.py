@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .modelos import SessaoViva
@@ -70,6 +72,22 @@ class Banco:
     def fechar(self) -> None:
         self.con.close()
 
+    @contextmanager
+    def transacao(self) -> Iterator[None]:
+        """Transação que já nasce com o lock de escrita (BEGIN IMMEDIATE).
+
+        O `with con:` do sqlite3 só abre a transação no primeiro INSERT/UPDATE: as leituras
+        anteriores ficam fora do lock, e dois processos simultâneos (ex.: vários shells rodando
+        `aviso` logo após o boot) decidem em cima do mesmo estado e duplicam eventos.
+        """
+        self.con.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.con.rollback()
+            raise
+        self.con.commit()
+
     # --- meta -----------------------------------------------------------------
 
     def meta(self, chave: str) -> str | None:
@@ -128,6 +146,13 @@ class Banco:
             (quando, tipo, provedor, session_id, pid, tty, boot_id),
         )
 
+    def fechou_desde(self, provedor: str, session_id: str, quando: int) -> bool:
+        return self.con.execute(
+            "SELECT 1 FROM eventos WHERE tipo = 'fechou' AND provedor = ? AND session_id = ? "
+            "AND quando >= ? LIMIT 1",
+            (provedor, session_id, quando),
+        ).fetchone() is not None
+
     def expurgar_eventos(self, antes_de: int) -> None:
         self.con.execute("DELETE FROM eventos WHERE quando < ?", (antes_de,))
 
@@ -161,14 +186,15 @@ class Banco:
         """Sessões do crash mais recente (todas as que morreram no mesmo boot)."""
         return self.con.execute(
             """
-            SELECT e.quando, e.tty, s.*,
+            SELECT MIN(e.id) AS primeiro, e.quando, e.tty, s.*,
                    EXISTS (SELECT 1 FROM vivas v
                            WHERE v.provedor = e.provedor AND v.session_id = e.session_id) AS reaberta
             FROM eventos e JOIN sessoes s USING (provedor, session_id)
             WHERE e.tipo = 'crash'
               AND e.boot_id = (SELECT boot_id FROM eventos WHERE tipo = 'crash'
                                ORDER BY quando DESC, id DESC LIMIT 1)
-            ORDER BY e.id
+            GROUP BY e.provedor, e.session_id  -- uma linha por sessão, mesmo com evento repetido
+            ORDER BY primeiro
             """
         ).fetchall()
 

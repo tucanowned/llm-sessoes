@@ -1,7 +1,10 @@
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 
 from llm_sessoes.banco import Banco
-from llm_sessoes.coletor import coletar
+from llm_sessoes.coletor import coletar, registrar_fechamento
 from llm_sessoes.modelos import SessaoViva
 
 
@@ -111,6 +114,85 @@ class ColetorTest(unittest.TestCase):
         self.coletar(3000, boot="boot-3")
 
         self.assertEqual(["nova"], [c["session_id"] for c in self.banco.ultimo_crash()])
+
+    def test_ultimo_crash_nao_repete_sessao_com_evento_duplicado(self):
+        self.provedor.sessoes = [sessao("a")]
+        self.coletar(1000, boot="boot-1")
+        self.coletar(5000, boot="boot-2")
+        self.banco.registrar_evento(1000, "crash", "claude", "a", 100, None, "boot-1")
+
+        self.assertEqual(["a"], [c["session_id"] for c in self.banco.ultimo_crash()])
+
+    def test_coletas_simultaneas_apos_boot_registram_crash_uma_vez(self):
+        # Vários shells rodando `aviso` logo após o boot coletam ao mesmo tempo.
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "sessoes.db"
+            banco = Banco(caminho)
+            self.provedor.sessoes = [sessao("a")]
+            coletar(banco, [self.provedor], 1000, "boot-1")
+            banco.fechar()
+
+            n = 4
+            largada = threading.Barrier(n)
+
+            class ProvedorSincronizado(ProvedorFalso):
+                def sessoes_vivas(self):
+                    largada.wait()  # todos entram na transação juntos
+                    return []
+
+            erros = []
+
+            def rodada():
+                b = Banco(caminho)
+                try:
+                    coletar(b, [ProvedorSincronizado()], 5000, "boot-2")
+                except Exception as e:  # pragma: no cover
+                    erros.append(e)
+                finally:
+                    b.fechar()
+
+            threads = [threading.Thread(target=rodada) for _ in range(n)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual([], erros)
+            banco = Banco(caminho)
+            crash = banco.con.execute(
+                "SELECT COUNT(*) FROM eventos WHERE tipo = 'crash'").fetchone()[0]
+            banco.fechar()
+            self.assertEqual(1, crash)
+
+    def test_fechamento_pelo_hook_durante_a_varredura_nao_reabre_a_sessao(self):
+        self.provedor.sessoes = [sessao("a")]
+        self.coletar(1000)
+        banco = self.banco
+
+        class ProvedorLento(ProvedorFalso):
+            def sessoes_vivas(self):
+                # A varredura ainda vê o processo saindo; o hook grava o fechamento antes da
+                # transação da coleta começar.
+                registrar_fechamento(banco, "claude", "a", 2001, "boot-1")
+                return [sessao("a")]
+
+        r = self.coletar(2000, provedores=[ProvedorLento()])
+
+        self.assertEqual([], r.abriram)
+        self.assertEqual([], self.banco.vivas())
+        self.assertEqual(["abriu", "fechou"], [e[0] for e in self.eventos()])
+        # Reboot em seguida: não pode virar crash.
+        self.coletar(3000, boot="boot-2", provedores=[ProvedorFalso()])
+        self.assertEqual([], self.banco.ultimo_crash())
+
+    def test_sessao_reaberta_depois_de_fechada_volta_a_ser_registrada(self):
+        self.provedor.sessoes = [sessao("a")]
+        self.coletar(1000)
+        registrar_fechamento(self.banco, "claude", "a", 1500, "boot-1")
+
+        r = self.coletar(2000)
+
+        self.assertEqual([("claude", "a")], r.abriram)
 
     def test_provedor_com_erro_nao_fecha_suas_sessoes_nem_afeta_os_outros(self):
         codex = ProvedorFalso("codex")

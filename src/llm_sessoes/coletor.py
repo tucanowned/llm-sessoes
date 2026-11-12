@@ -49,7 +49,7 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
         except Exception as erro:  # um provedor quebrado não pode derrubar a coleta dos outros
             resultado.avisos.append(f"provedor {provedor.nome} falhou: {erro!r}")
 
-    with banco.con:  # transação única: ou a rodada inteira entra, ou nada
+    with banco.transacao():  # transação única: ou a rodada inteira entra, ou nada
         boot_anterior = banco.meta("boot_id")
         ultima_coleta = int(banco.meta("ultima_coleta") or agora)
         anteriores = {(v["provedor"], v["session_id"]): v for v in banco.vivas()}
@@ -73,7 +73,14 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
             banco.remover_viva(*chave)
             resultado.fecharam.append(chave)
 
+        fechadas_na_varredura: set[tuple[str, str]] = set()
         for chave, sessao in atuais.items():
+            if chave not in anteriores and banco.fechou_desde(*chave, agora):
+                # O hook registrou o fechamento enquanto esta rodada varria os processos: a
+                # varredura viu o processo ainda saindo. Sem isso a sessão "reabriria" e, se a
+                # máquina desligasse em seguida, viraria um crash falso.
+                fechadas_na_varredura.add(chave)
+                continue
             banco.salvar_sessao(sessao, agora)
             if chave not in anteriores:
                 banco.registrar_evento(agora, "abriu", *chave, sessao.pid, sessao.tty, boot_id)
@@ -86,7 +93,7 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
         banco.definir_meta("ultima_coleta", str(agora))
         banco.expurgar_eventos(agora - RETENCAO_EVENTOS)
 
-    resultado.vivas = len(atuais)
+    resultado.vivas = len(atuais) - len(fechadas_na_varredura)
     return resultado
 
 
@@ -97,7 +104,7 @@ def registrar_fechamento(banco: Banco, provedor: str, session_id: str, agora: in
     Só vale para sessão que o coletor já viu viva; a rodada seguinte não a encontra mais em
     `vivas` e, portanto, não duplica o evento.
     """
-    with banco.con:
+    with banco.transacao():
         viva = next((v for v in banco.vivas()
                      if (v["provedor"], v["session_id"]) == (provedor, session_id)), None)
         if viva is None:
