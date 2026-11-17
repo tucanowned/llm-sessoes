@@ -392,6 +392,33 @@ class AbasTest(unittest.TestCase):
         html = self.html("ativas")
 
         self.assertIn('Ativas <span class="n">3</span>', html)
+        self.assertIn('Fechadas e crash <span class="n">3</span>', html)
+
+    def test_ativas_de_maquina_offline_nao_entram_no_contador_da_aba(self):
+        self.a.gravar(validar(relatorio(maquina="desligada", vivas=[sessao("x"), sessao("y")])),
+                      AGORA - 3600)
+
+        html = self.html("ativas")
+
+        self.assertIn('Ativas <span class="n">3</span>', html)  # 2 do pc + 1 do nitro
+        self.assertIn("Máquina offline: sessões segundo o último envio.", html)
+
+    def test_contagem_por_pc_no_cabecalho_com_link_para_a_outra_aba(self):
+        ativas, recentes = self.html("ativas"), self.html("recentes")
+
+        self.assertIn('<span class="contagem"><span>2 ativas</span> · <a href="?aba=recentes">'
+                      '3 fechadas <span class="crash">(1 crash)</span></a></span>', ativas)
+        self.assertIn('<span class="contagem"><a href="?aba=ativas">2 ativas</a> · '
+                      '<span>3 fechadas <span class="crash">(1 crash)</span></span></span>', recentes)
+        # nitro, compacto na aba de fechadas: só a contagem da outra aba
+        self.assertIn('<span class="contagem"><a href="?aba=ativas">1 ativa</a></span>', recentes)
+        # e na aba de ativas, o "0 fechadas" do nitro não é link
+        self.assertIn('<span class="contagem"><span>1 ativa</span> · <span>0 fechadas</span></span>',
+                      ativas)
+
+    def test_contador_da_aba_de_crash(self):
+        html = self.html("ativas")
+
         self.assertIn('Fechadas e crash <span class="n">3</span>'
                       ' <span class="crash24">● 1 crash em 24 h</span>', html)
 

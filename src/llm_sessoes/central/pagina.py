@@ -52,6 +52,10 @@ nav.abas .crash24 { font-size: 11.5px; font-weight: 600; color: var(--red); }
 section.maquina.compacta { padding: 9px 16px; }
 .cab .nada-aqui { color: var(--overlay0); font-size: 13px; }
 .cab .sep { color: var(--overlay0); }
+.cab .contagem { color: var(--subtext0); font-size: 12.5px; }
+.cab .contagem a { color: var(--subtext1); text-decoration: none; border-bottom: 1px dotted var(--overlay0); }
+.cab .contagem a:hover { color: var(--mauve); border-bottom-color: var(--mauve); }
+.cab .contagem .crash { color: var(--red); }
 .nota-offline { margin: 8px 0 0; color: var(--overlay0); font-size: 12.5px; }
 .evento { flex: none; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 4px; }
 .evento.crash { color: var(--red); background: rgba(243,139,168,.15); }
@@ -237,7 +241,8 @@ def ha_quanto(quando: int | None, agora: int) -> str:
 
 def _abas(maquinas: list[dict], atual: str, crashes_24h: int) -> str:
     """Links comuns gerados no servidor: nada de JavaScript (a CSP só libera o script do copiar)."""
-    contagem = {"ativas": sum(len(m["vivas"]) for m in maquinas),
+    # Ativas só de máquina online: as de uma offline são um retrato velho (como no resumo).
+    contagem = {"ativas": sum(len(m["vivas"]) for m in maquinas if m["online"]),
                 "recentes": sum(len(m["recentes"]) for m in maquinas)}
     links = []
     for aba, rotulo in ABAS.items():
@@ -257,6 +262,30 @@ def _url_aba(aba: str) -> str:
     return f"?aba={aba}"
 
 
+def _contagem(m: dict, atual: str) -> str:
+    """`2 ativas · 5 fechadas (1 crash)` no cabeçalho do PC; a parte da outra aba é um link.
+
+    Na linha compacta a parte da aba atual some: o "nenhuma sessão…" já diz que é zero.
+    """
+    vivas, recentes = len(m["vivas"]), len(m["recentes"])
+    crashes = sum(1 for r in m["recentes"] if r["tipo"] == "crash")
+    textos = {"ativas": f"{vivas} ativa{'s' if vivas != 1 else ''}",
+              "recentes": f"{recentes} fechada{'s' if recentes != 1 else ''}"}
+    compacta = not (m["vivas"] if atual == "ativas" else m["recentes"])
+    partes = []
+    for aba, texto in textos.items():
+        if aba == atual and compacta:
+            continue
+        extra = ""
+        if aba == "recentes" and crashes:
+            extra = f' <span class="crash">({crashes} crash{"es" if crashes != 1 else ""})</span>'
+        if aba == atual or texto.startswith("0 "):  # link para uma aba sem nada deste PC: não
+            partes.append(f"<span>{texto}{extra}</span>")
+        else:
+            partes.append(f'<a href="{_e(_url_aba(aba))}">{texto}{extra}</a>')
+    return f'<span class="contagem">{" · ".join(partes)}</span>'
+
+
 def _maquina(m: dict, agora: int, aba: str) -> str:
     estado = "online" if m["online"] else "offline"
     anomalias = ""
@@ -269,7 +298,8 @@ def _maquina(m: dict, agora: int, aba: str) -> str:
     sessoes = m["vivas"] if viva else m["recentes"]  # recentes já vêm da mais nova à mais antiga
     cab = f"""<h2>{_e(m["nome"])}</h2>
     <span class="pilula {estado}">{estado}</span>
-    <span class="envio" data-epoch="{m["recebido_em"]}">último envio {ha_quanto(m["recebido_em"], agora)}</span>"""
+    <span class="envio" data-epoch="{m["recebido_em"]}">último envio {ha_quanto(m["recebido_em"], agora)}</span>
+    {_contagem(m, aba)}"""
 
     if not sessoes:
         # Máquina sem nada nesta aba: uma linha, não um bloco vazio.

@@ -248,10 +248,11 @@ e opcionalmente `LLM_SESSOES_PORTA`, `LLM_SESSOES_ENDERECO`, `LLM_SESSOES_CENTRA
 | `GET /healthz` | `200 ok` |
 
 A página tem duas abas globais, **Ativas** e **Fechadas e crash**, com os contadores somados de
-todas as máquinas; a segunda fica vermelha quando houve crash nas últimas 24 h. São links comuns
+todas as máquinas (as ativas só das online: as de uma offline são um retrato velho); a segunda fica vermelha quando houve crash nas últimas 24 h. São links comuns
 gerados no servidor (sem JavaScript), e a aba fica na URL, então o auto-refresh a mantém. Dentro
 de cada aba há um bloco por máquina só com o conteúdo daquela aba; máquina sem nada na aba vira
-uma linha compacta. A página tem um bloco por máquina — **online/offline** (offline = sem relatório há mais de
+uma linha compacta. O cabeçalho de cada PC mostra `2 ativas · 5 fechadas (1 crash)`, com
+link para a outra aba. A página tem um bloco por máquina — **online/offline** (offline = sem relatório há mais de
 5 min, pelo relógio do servidor) e "último envio há X" —, com as anomalias em destaque, as
 sessões ativas (título, projeto/worktree/branch, `trabalhando`/`parada` e há quanto tempo,
 tmux) e as fechadas/crash das últimas 48 h que não foram reabertas. O botão copia:
