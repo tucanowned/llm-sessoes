@@ -91,6 +91,7 @@ li.sessao.crash { border-left-color: var(--red); }
   background: var(--surface0); color: var(--subtext1); }
 .selo.claude { color: var(--peach); }
 .selo.codex { color: var(--blue); }
+.selo.opencode { color: var(--green); }
 .l2 { grid-column: 1; display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--subtext0);
   font-size: 12.5px; }
 .l2 .proj { color: var(--text); }

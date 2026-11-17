@@ -50,6 +50,15 @@ CREATE TABLE IF NOT EXISTS eventos (
 );
 CREATE INDEX IF NOT EXISTS eventos_tipo_quando ON eventos (tipo, quando);
 
+-- Fechadas pelo usuário (`llm-sessoes opencode fechar`): não voltam a contar como abertas
+-- até terem atividade depois de `quando`.
+CREATE TABLE IF NOT EXISTS fechamentos_manuais (
+    provedor    TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    quando      INTEGER NOT NULL,
+    PRIMARY KEY (provedor, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     chave  TEXT PRIMARY KEY,
     valor  TEXT NOT NULL
@@ -166,6 +175,18 @@ class Banco:
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (quando, tipo, provedor, session_id, pid, tty, boot_id),
         )
+
+    def marcar_fechamento_manual(self, provedor: str, session_id: str, quando: int) -> None:
+        self.con.execute(
+            "INSERT INTO fechamentos_manuais (provedor, session_id, quando) VALUES (?, ?, ?) "
+            "ON CONFLICT (provedor, session_id) DO UPDATE SET quando = excluded.quando",
+            (provedor, session_id, quando))
+
+    def fechamento_manual(self, provedor: str, session_id: str) -> int | None:
+        linha = self.con.execute(
+            "SELECT quando FROM fechamentos_manuais WHERE provedor = ? AND session_id = ?",
+            (provedor, session_id)).fetchone()
+        return linha["quando"] if linha else None
 
     def fechou_desde(self, provedor: str, session_id: str, quando: int) -> bool:
         return self.con.execute(

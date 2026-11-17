@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from llm_sessoes.banco import Banco
-from llm_sessoes.coletor import coletar, registrar_fechamento
+from llm_sessoes.coletor import coletar, fechar_manualmente, registrar_fechamento
 from llm_sessoes.modelos import SessaoViva
 
 
@@ -268,6 +268,83 @@ class ColetorTest(unittest.TestCase):
         self.provedor.sessoes = [sessao("a", versao="2.1.0"), sessao("b", pid=2, versao="2.2.0")]
         self.assertEqual(["claude: versão nova em uso: 2.2.0"], self.coletar(1120).notas)
         self.assertEqual([], self.coletar(1240).notas)
+
+
+class ProvedorPersistenteTest(unittest.TestCase):
+    """Provedor cuja sessão não depende de processo (opencode): aberta = em andamento."""
+
+    def setUp(self):
+        self.banco = Banco(":memory:")
+        self.claude = ProvedorFalso("claude")
+        self.opencode = ProvedorFalso("opencode")
+        self.opencode.persistente = True
+
+    def tearDown(self):
+        self.banco.fechar()
+
+    def coletar(self, agora, boot="boot-1"):
+        return coletar(self.banco, [self.claude, self.opencode], agora, boot)
+
+    def oc(self, session_id, atividade):
+        return sessao(session_id, pid=0, provedor="opencode", ultima_atividade=atividade)
+
+    def eventos(self):
+        return [tuple(l) for l in self.banco.con.execute(
+            "SELECT tipo, provedor, session_id, quando FROM eventos ORDER BY id")]
+
+    def test_reboot_nao_e_crash_para_o_persistente(self):
+        self.claude.sessoes = [sessao("c")]
+        self.opencode.sessoes = [self.oc("o", 900)]
+        self.coletar(1000)
+        self.claude.sessoes = []
+
+        r = self.coletar(5000, boot="boot-2")
+
+        self.assertEqual([("claude", "c")], r.crash)
+        self.assertEqual([], r.abriram)  # continua aberta, sem "abriu" de novo
+        self.assertEqual(["o"], [v["session_id"] for v in self.banco.vivas()])
+        self.assertEqual(["c"], [s["session_id"] for s in self.banco.ultimo_crash()])
+
+    def test_fechamento_por_inatividade_e_datado_da_ultima_atividade(self):
+        self.opencode.sessoes = [self.oc("o", 1500)]
+        self.coletar(1000)
+        self.coletar(2000)
+        self.opencode.sessoes = []  # passou do prazo: o provedor não a lista mais
+
+        r = self.coletar(900_000)
+
+        self.assertEqual([("opencode", "o")], r.fecharam)
+        self.assertEqual(("fechou", "opencode", "o", 1500), self.eventos()[-1])
+
+    def test_fechamento_nunca_fica_antes_da_abertura(self):
+        self.opencode.sessoes = [self.oc("o", 100)]  # já vinha parada quando foi vista
+        self.coletar(1000)
+        self.opencode.sessoes = []
+
+        self.coletar(900_000)
+
+        self.assertEqual(("fechou", "opencode", "o", 1000), self.eventos()[-1])
+
+    def test_fechamento_manual_vale_ate_ter_atividade_nova(self):
+        self.opencode.sessoes = [self.oc("o", 900)]
+        self.coletar(1000)
+
+        self.assertTrue(fechar_manualmente(self.banco, "opencode", "o", 1100, "boot-1"))
+        r = self.coletar(1200)  # o provedor ainda lista: está dentro do prazo
+
+        self.assertEqual([], self.banco.vivas())
+        self.assertEqual([], r.abriram)
+        self.assertEqual(0, r.vivas)
+        self.assertEqual(("fechou", "opencode", "o", 1100), self.eventos()[-1])
+
+        self.opencode.sessoes = [self.oc("o", 1300)]  # retomada no opencode
+        r = self.coletar(1400)
+
+        self.assertEqual([("opencode", "o")], r.abriram)
+
+    def test_fechar_manualmente_sessao_que_nao_estava_aberta(self):
+        self.assertFalse(fechar_manualmente(self.banco, "opencode", "x", 1000, "boot-1"))
+        self.assertEqual([], self.eventos())
 
 
 if __name__ == "__main__":

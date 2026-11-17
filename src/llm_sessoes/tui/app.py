@@ -40,7 +40,8 @@ TEMA = Theme(
                "block-cursor-text-style": "none"},
 )
 
-SELOS = {"claude": f"bold {FUNDO} on #e0926a", "codex": f"bold {FUNDO} on #7fb2f0"}
+SELOS = {"claude": f"bold {FUNDO} on #e0926a", "codex": f"bold {FUNDO} on #7fb2f0",
+         "opencode": f"bold {FUNDO} on #8fd4a8"}
 ESTADOS = {  # estado → (símbolo, cor)
     dados.ABERTA: ("●", AGUA), dados.REABERTA: ("●", AGUA), dados.PENDENTE: ("▲", CORAL),
     dados.CRASH: ("▲", CORAL), dados.FECHADA: ("○", AMBAR), dados.DESCONHECIDO: ("·", APAGADO),

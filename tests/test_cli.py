@@ -255,6 +255,36 @@ class CliTest(unittest.TestCase):
         self.assertEqual(0, self.hook('{"hook_event_name": "SessionEnd", "session_id": "nunca-vi"}'))
         self.assertEqual(0, self.hook('{"hook_event_name": "Stop", "session_id": "x"}'))
 
+    # --- opencode -------------------------------------------------------------------
+
+    def coletar_opencode(self, *ids):
+        prov = ProvedorFalso([SessaoViva("opencode", i, 0, dir_resume="/r", titulo=f"t {i}",
+                                         ultima_atividade=self.agora - 60) for i in ids])
+        prov.nome, prov.persistente = "opencode", True
+        banco = Banco(self.caminho)
+        coletar(banco, [prov], self.agora - 30, "boot-1")
+        banco.fechar()
+
+    def test_opencode_fechar_por_prefixo(self):
+        self.coletar_opencode("ses_abc1", "ses_xyz2")
+        with mock.patch.object(cli.sistema, "boot_id", return_value="boot-1"):
+            codigo, saida = self.rodar("opencode", "fechar", "ses_abc")
+
+        self.assertEqual(0, codigo)
+        self.assertIn("Fechada: [opencode] t ses_abc1", saida)
+        self.assertNotIn("t ses_abc1", self.rodar("status")[1])
+        self.assertIn("t ses_abc1", self.rodar("fechadas")[1])
+
+    def test_opencode_fechar_prefixo_ambiguo_ou_desconhecido(self):
+        self.coletar_opencode("ses_abc1", "ses_abc2")
+        erro = io.StringIO()
+        with contextlib.redirect_stderr(erro):
+            self.assertEqual(2, self.rodar("opencode", "fechar", "ses_abc")[0])
+            self.assertEqual(2, self.rodar("opencode", "fechar", "nada")[0])
+
+        self.assertIn("ambíguo", erro.getvalue())
+        self.assertIn("nenhuma sessão do opencode", erro.getvalue())
+
     # --- painel central -------------------------------------------------------------
 
     def test_enviar_sem_configuracao_nao_faz_nada(self):

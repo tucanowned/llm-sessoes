@@ -1,9 +1,10 @@
 from .claude import ProvedorClaude
 from .codex import ProvedorCodex
+from .opencode import ProvedorOpencode
 
 
 def todos():
-    return [ProvedorClaude(), ProvedorCodex()]
+    return [ProvedorClaude(), ProvedorCodex(), ProvedorOpencode()]
 
 
 def por_nome(nome: str):
