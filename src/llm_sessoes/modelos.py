@@ -21,6 +21,8 @@ class SessaoViva:
     ultima_msg: str | None = None
     versao: str | None = None
     """Versão da ferramenta — serve para correlacionar quebras com atualizações."""
+    ultima_atividade: int | None = None
+    """Epoch da última escrita na conversa (mtime do arquivo), quando o provedor souber."""
 
     @property
     def chave(self) -> tuple[str, str]:

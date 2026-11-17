@@ -64,7 +64,7 @@ class ProvedorCodex:
                     dir_trabalho=meta.get("cwd"), tty=processo.tty,
                     titulo=_titulo(meta), branch=meta.get("git_branch"),
                     ultima_msg=_ultima_mensagem(rollout),
-                    versao=meta.get("cli_version"),
+                    versao=meta.get("cli_version"), ultima_atividade=_mtime(rollout),
                 ))
         return vivas
 
@@ -99,6 +99,13 @@ class ProvedorCodex:
 def _titulo(meta: dict) -> str | None:
     titulo = meta.get("name") or meta.get("title") or meta.get("first_user_message")
     return " ".join(str(titulo).split())[:LIMITE_TITULO] if titulo else None
+
+
+def _mtime(arquivo: Path | None) -> int | None:
+    try:
+        return int(arquivo.stat().st_mtime) if arquivo else None
+    except OSError:
+        return None
 
 
 def _caminho(valor) -> Path | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Iterable, Protocol
 
@@ -29,7 +30,9 @@ class Resultado:
     """Informativo (ex.: versão nova de uma ferramenta) — não indica problema."""
 
 
-def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: str) -> Resultado:
+def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: str,
+            tmux_de: Callable[[int], dict | None] | None = None) -> Resultado:
+    """`tmux_de(pid)` diz em que sessão do tmux o processo roda (ver `sistema.tmux_do_processo`)."""
     resultado = Resultado()
 
     atuais: dict[tuple[str, str], SessaoViva] = {}
@@ -49,7 +52,10 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
         except Exception as erro:  # um provedor quebrado não pode derrubar a coleta dos outros
             resultado.avisos.append(f"provedor {provedor.nome} falhou: {erro!r}")
 
-    with banco.con:  # transação única: ou a rodada inteira entra, ou nada
+    # Fora da transação: são subprocessos (tmux display) e não devem segurar o lock do banco.
+    tmux = _resolver_tmux(atuais.values(), tmux_de) if tmux_de else {}
+
+    with banco.transacao():  # transação única: ou a rodada inteira entra, ou nada
         boot_anterior = banco.meta("boot_id")
         ultima_coleta = int(banco.meta("ultima_coleta") or agora)
         anteriores = {(v["provedor"], v["session_id"]): v for v in banco.vivas()}
@@ -73,12 +79,19 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
             banco.remover_viva(*chave)
             resultado.fecharam.append(chave)
 
+        fechadas_na_varredura: set[tuple[str, str]] = set()
         for chave, sessao in atuais.items():
+            if chave not in anteriores and banco.fechou_desde(*chave, agora):
+                # O hook registrou o fechamento enquanto esta rodada varria os processos: a
+                # varredura viu o processo ainda saindo. Sem isso a sessão "reabriria" e, se a
+                # máquina desligasse em seguida, viraria um crash falso.
+                fechadas_na_varredura.add(chave)
+                continue
             banco.salvar_sessao(sessao, agora)
             if chave not in anteriores:
                 banco.registrar_evento(agora, "abriu", *chave, sessao.pid, sessao.tty, boot_id)
                 resultado.abriram.append(chave)
-            banco.salvar_viva(sessao, agora)
+            banco.salvar_viva(sessao, agora, tmux.get(sessao.pid))
 
         _anotar_versoes(banco, atuais.values(), resultado)
         banco.definir_meta("avisos", json.dumps(resultado.avisos))
@@ -86,7 +99,7 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
         banco.definir_meta("ultima_coleta", str(agora))
         banco.expurgar_eventos(agora - RETENCAO_EVENTOS)
 
-    resultado.vivas = len(atuais)
+    resultado.vivas = len(atuais) - len(fechadas_na_varredura)
     return resultado
 
 
@@ -97,7 +110,7 @@ def registrar_fechamento(banco: Banco, provedor: str, session_id: str, agora: in
     Só vale para sessão que o coletor já viu viva; a rodada seguinte não a encontra mais em
     `vivas` e, portanto, não duplica o evento.
     """
-    with banco.con:
+    with banco.transacao():
         viva = next((v for v in banco.vivas()
                      if (v["provedor"], v["session_id"]) == (provedor, session_id)), None)
         if viva is None:
@@ -105,6 +118,19 @@ def registrar_fechamento(banco: Banco, provedor: str, session_id: str, agora: in
         banco.registrar_evento(agora, "fechou", provedor, session_id, viva["pid"], viva["tty"], boot_id)
         banco.remover_viva(provedor, session_id)
     return True
+
+
+def _resolver_tmux(sessoes: Iterable[SessaoViva],
+                   tmux_de: Callable[[int], dict | None]) -> dict[int, dict]:
+    por_pid: dict[int, dict] = {}
+    for pid in {s.pid for s in sessoes}:  # o codex tem várias threads no mesmo processo
+        try:
+            achado = tmux_de(pid)
+        except Exception:
+            continue  # tmux é informação acessória: nunca derruba a coleta
+        if achado:
+            por_pid[pid] = achado
+    return por_pid
 
 
 def _anotar_versoes(banco: Banco, sessoes: Iterable[SessaoViva], resultado: Resultado) -> None:

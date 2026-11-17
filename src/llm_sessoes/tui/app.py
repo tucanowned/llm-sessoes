@@ -335,6 +335,8 @@ class SessoesApp(App):
             campos.append(("branch", item.branch, TEXTO))
         if item.tty:
             campos.append(("terminal", item.tty, TEXTO))
+        if item.tmux:
+            campos.append(("tmux", item.tmux, TEXTO))
         for nome, valor, estilo in campos:
             texto.append(f"{nome}\n", APAGADO)
             texto.append(f"{valor}\n\n", estilo)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .modelos import SessaoViva
@@ -19,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sessoes (
     ultima_msg    TEXT,
     primeira_vez  INTEGER NOT NULL,
     ultima_vez    INTEGER NOT NULL,
+    ultima_atividade INTEGER,           -- última escrita na conversa, quando o provedor sabe
     PRIMARY KEY (provedor, session_id)
 );
 
@@ -30,6 +34,7 @@ CREATE TABLE IF NOT EXISTS vivas (
     tty         TEXT,
     status      TEXT,
     desde       INTEGER NOT NULL,
+    tmux        TEXT,                   -- JSON {sessao, janela, painel} ou NULL
     PRIMARY KEY (provedor, session_id)
 );
 
@@ -51,6 +56,12 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
+COLUNAS_NOVAS = {
+    # tabela: [(coluna, tipo)] — acrescentadas em bancos criados antes delas existirem
+    "sessoes": [("ultima_atividade", "INTEGER")],
+    "vivas": [("tmux", "TEXT")],
+}
+
 
 def caminho_padrao() -> Path:
     if os.environ.get("LLM_SESSOES_DB"):
@@ -66,9 +77,34 @@ class Banco:
         self.con = sqlite3.connect(str(caminho), timeout=10)
         self.con.row_factory = sqlite3.Row
         self.con.executescript(ESQUEMA)
+        self._migrar()
+
+    def _migrar(self) -> None:
+        for tabela, colunas in COLUNAS_NOVAS.items():
+            existentes = {l["name"] for l in self.con.execute(f"PRAGMA table_info({tabela})")}
+            for coluna, tipo in colunas:
+                if coluna not in existentes:
+                    self.con.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
+        self.con.commit()
 
     def fechar(self) -> None:
         self.con.close()
+
+    @contextmanager
+    def transacao(self) -> Iterator[None]:
+        """Transação que já nasce com o lock de escrita (BEGIN IMMEDIATE).
+
+        O `with con:` do sqlite3 só abre a transação no primeiro INSERT/UPDATE: as leituras
+        anteriores ficam fora do lock, e dois processos simultâneos (ex.: vários shells rodando
+        `aviso` logo após o boot) decidem em cima do mesmo estado e duplicam eventos.
+        """
+        self.con.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.con.rollback()
+            raise
+        self.con.commit()
 
     # --- meta -----------------------------------------------------------------
 
@@ -90,29 +126,32 @@ class Banco:
         self.con.execute(
             """
             INSERT INTO sessoes (provedor, session_id, titulo, dir_resume, dir_trabalho,
-                                 branch, ultima_msg, primeira_vez, ultima_vez)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 branch, ultima_msg, primeira_vez, ultima_vez, ultima_atividade)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (provedor, session_id) DO UPDATE SET
                 titulo       = COALESCE(excluded.titulo, titulo),
                 dir_resume   = excluded.dir_resume,
                 dir_trabalho = COALESCE(excluded.dir_trabalho, dir_trabalho),
                 branch       = COALESCE(excluded.branch, branch),
                 ultima_msg   = COALESCE(excluded.ultima_msg, ultima_msg),
-                ultima_vez   = excluded.ultima_vez
+                ultima_vez   = excluded.ultima_vez,
+                ultima_atividade = COALESCE(excluded.ultima_atividade, ultima_atividade)
             """,
             (s.provedor, s.session_id, s.titulo, s.dir_resume, s.dir_trabalho,
-             s.branch, s.ultima_msg, agora, agora),
+             s.branch, s.ultima_msg, agora, agora, s.ultima_atividade),
         )
 
-    def salvar_viva(self, s: SessaoViva, agora: int) -> None:
+    def salvar_viva(self, s: SessaoViva, agora: int, tmux: dict | None = None) -> None:
         self.con.execute(
             """
-            INSERT INTO vivas (provedor, session_id, pid, tty, status, desde)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO vivas (provedor, session_id, pid, tty, status, desde, tmux)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (provedor, session_id) DO UPDATE SET
-                pid = excluded.pid, tty = excluded.tty, status = excluded.status
+                pid = excluded.pid, tty = excluded.tty, status = excluded.status,
+                tmux = excluded.tmux
             """,
-            (s.provedor, s.session_id, s.pid, s.tty, s.status, agora),
+            (s.provedor, s.session_id, s.pid, s.tty, s.status, agora,
+             json.dumps(tmux) if tmux else None),
         )
 
     def remover_viva(self, provedor: str, session_id: str) -> None:
@@ -128,6 +167,13 @@ class Banco:
             (quando, tipo, provedor, session_id, pid, tty, boot_id),
         )
 
+    def fechou_desde(self, provedor: str, session_id: str, quando: int) -> bool:
+        return self.con.execute(
+            "SELECT 1 FROM eventos WHERE tipo = 'fechou' AND provedor = ? AND session_id = ? "
+            "AND quando >= ? LIMIT 1",
+            (provedor, session_id, quando),
+        ).fetchone() is not None
+
     def expurgar_eventos(self, antes_de: int) -> None:
         self.con.execute("DELETE FROM eventos WHERE quando < ?", (antes_de,))
 
@@ -136,10 +182,22 @@ class Banco:
     def vivas(self) -> list[sqlite3.Row]:
         return self.con.execute(
             """
-            SELECT v.pid, v.tty, v.status, v.desde, s.*
+            SELECT v.pid, v.tty, v.status, v.desde, v.tmux, s.*
             FROM vivas v JOIN sessoes s USING (provedor, session_id)
             ORDER BY v.desde, v.pid
             """
+        ).fetchall()
+
+    def eventos_desde(self, desde: int) -> list[sqlite3.Row]:
+        """Eventos a partir de `desde`, com os metadados da sessão, do mais antigo ao mais novo."""
+        return self.con.execute(
+            """
+            SELECT e.tipo, e.quando, s.*
+            FROM eventos e JOIN sessoes s USING (provedor, session_id)
+            WHERE e.quando >= ?
+            ORDER BY e.quando, e.id
+            """,
+            (desde,),
         ).fetchall()
 
     def fechadas(self, desde: int) -> list[sqlite3.Row]:
@@ -161,14 +219,15 @@ class Banco:
         """Sessões do crash mais recente (todas as que morreram no mesmo boot)."""
         return self.con.execute(
             """
-            SELECT e.quando, e.tty, s.*,
+            SELECT MIN(e.id) AS primeiro, e.quando, e.tty, s.*,
                    EXISTS (SELECT 1 FROM vivas v
                            WHERE v.provedor = e.provedor AND v.session_id = e.session_id) AS reaberta
             FROM eventos e JOIN sessoes s USING (provedor, session_id)
             WHERE e.tipo = 'crash'
               AND e.boot_id = (SELECT boot_id FROM eventos WHERE tipo = 'crash'
                                ORDER BY quando DESC, id DESC LIMIT 1)
-            ORDER BY e.id
+            GROUP BY e.provedor, e.session_id  -- uma linha por sessão, mesmo com evento repetido
+            ORDER BY primeiro
             """
         ).fetchall()
 

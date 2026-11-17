@@ -30,6 +30,8 @@ class Item:
     quando: int
     """Aberta: desde quando. Fechada/crash: quando aconteceu. Demais: última vez vista."""
     tty: str | None = None
+    tmux: str | None = None
+    """`sessao:janela` do tmux onde a sessão viva roda."""
 
     @property
     def chave(self) -> str:
@@ -124,4 +126,13 @@ def _item(s, estado: str, quando: int) -> Item:
         dir_resume=s["dir_resume"], dir_trabalho=s["dir_trabalho"], branch=s["branch"],
         ultima_msg=s["ultima_msg"], estado=estado, quando=quando,
         tty=s["tty"] if "tty" in s.keys() else None,
+        tmux=_tmux(s["tmux"]) if "tmux" in s.keys() else None,
     )
+
+
+def _tmux(texto: str | None) -> str | None:
+    try:
+        t = json.loads(texto) if texto else None
+        return f"{t['sessao']}:{t['janela']}" if t else None
+    except (ValueError, KeyError, TypeError):
+        return None
