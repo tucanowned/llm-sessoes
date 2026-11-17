@@ -3,7 +3,7 @@
 services:
   llm-sessoes:
     build: .
-    image: llm-sessoes-central:0.2.1
+    image: llm-sessoes-central:0.3.0
     container_name: llm-sessoes
     restart: unless-stopped
     environment:

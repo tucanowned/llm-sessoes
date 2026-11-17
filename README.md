@@ -1,6 +1,6 @@
 # llm-sessoes
 
-Gestor de sessões de CLIs de LLM: Claude Code e Codex.
+Gestor de sessões de CLIs de LLM: Claude Code, Codex e opencode.
 
 Resolve dois problemas:
 
@@ -62,6 +62,32 @@ O Codex não tem um arquivo por processo, mas cada processo `codex` mantém aber
    cauda do rollout, pulando os blocos de contexto injetado (`<environment_context>` etc.).
 
 Validado com o codex-cli 0.154. Resume: `codex resume <thread-id>`.
+
+### Como o provedor opencode descobre as sessões
+
+O opencode (validado no 2.0.29) não tem um processo por sessão: o TUI é só um cliente do
+**serviço em segundo plano** (`opencode serve --service`), e nada no `/proc` nem na API dele diz
+qual sessão cada TUI está mostrando. Por isso, para o opencode, **aberta quer dizer em
+andamento** (o que já vale, na prática, para sessões sem aba visível, como as de um tmux
+destacado):
+
+1. lê `~/.local/share/opencode/opencode.db` (somente leitura), tabela `session_v2`: sessões
+   principais (não subsessões), não arquivadas, com atividade (`time_updated`) nos últimos
+   **10 dias** (`LLM_SESSOES_OPENCODE_DIAS`). Abrir a sessão no TUI também conta como atividade;
+2. título, diretório de trabalho (pode ser um worktree do próprio opencode, em
+   `~/.local/share/opencode/worktree/…`) e a raiz do projeto (`project.worktree`, de onde se
+   retoma); a branch é lida do `.git` do diretório; a última mensagem e o status vêm de
+   `session_message` — o opencode grava uma linha `idle` ao fim de cada turno, então se ela é a
+   mais recente a sessão está parada;
+3. fecha quando passa do prazo sem atividade (o `fechou` é datado da **última atividade**, não da
+   coleta que percebeu), quando é arquivada no opencode, ou à mão:
+
+```bash
+llm-sessoes opencode fechar ses_ebf1   # prefixo do id; não reabre até ter atividade nova
+```
+
+Reboot não vira crash para o opencode (a sessão continua no serviço). Sem processo, não há
+terminal nem tmux associados; o resume é `opencode -s <id>`.
 
 ### Quando uma atualização muda o formato interno
 
@@ -316,4 +342,5 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v # suíte comple
 - [x] Reabrir em abas do Windows Terminal (`wt.exe new-tab`) — módulo `reabrir` + CLI
 - [x] Aviso de crash no primeiro shell após o boot (`llm-sessoes aviso`)
 - [x] Hook `SessionEnd` do Claude Code para registrar fechamento na hora (`llm-sessoes hook claude`)
+- [x] Provedor opencode (aberta = em andamento; fechamento manual ou por inatividade)
 - [x] Painel central: `llm-sessoes enviar` em cada máquina + `llm-sessoes central` no orbit (Docker)

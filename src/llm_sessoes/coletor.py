@@ -37,6 +37,9 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
 
     atuais: dict[tuple[str, str], SessaoViva] = {}
     provedores_ok: set[str] = set()
+    provedores = list(provedores)
+    # Provedores cuja sessão não depende de um processo (opencode): reboot não é crash.
+    persistentes = {p.nome for p in provedores if getattr(p, "persistente", False)}
     for provedor in provedores:
         try:
             for sessao in provedor.sessoes_vivas():
@@ -63,24 +66,37 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
         if boot_anterior and boot_anterior != boot_id:
             # A máquina reiniciou: tudo que estava vivo morreu sem se despedir. O evento é datado
             # da última coleta — o último momento em que sabemos que estavam abertas.
-            for chave, viva in anteriores.items():
+            for chave, viva in list(anteriores.items()):
+                if chave[0] in persistentes:
+                    continue  # continua viva no serviço da ferramenta; segue o fluxo normal
                 banco.registrar_evento(ultima_coleta, "crash", *chave,
                                        viva["pid"], viva["tty"], boot_anterior)
                 banco.remover_viva(*chave)
                 resultado.crash.append(chave)
-            anteriores = {}
+                del anteriores[chave]
 
         for chave, viva in anteriores.items():
             if chave in atuais:
                 continue
             if chave[0] not in provedores_ok:
                 continue  # provedor falhou nesta rodada: ausência não significa que fechou
-            banco.registrar_evento(agora, "fechou", *chave, viva["pid"], viva["tty"], boot_id)
+            quando = agora
+            if chave[0] in persistentes:
+                # Sumiu por inatividade (ou foi arquivada): o último sinal de vida é a última
+                # atividade — senão uma sessão parada há 10 dias apareceria "fechada agora".
+                quando = min(agora, max(viva["ultima_atividade"] or 0, viva["desde"]))
+            banco.registrar_evento(quando, "fechou", *chave, viva["pid"], viva["tty"], boot_id)
             banco.remover_viva(*chave)
             resultado.fecharam.append(chave)
 
         fechadas_na_varredura: set[tuple[str, str]] = set()
         for chave, sessao in atuais.items():
+            fechada_a_mao = banco.fechamento_manual(*chave)
+            if (chave not in anteriores and fechada_a_mao is not None
+                    and (sessao.ultima_atividade or 0) <= fechada_a_mao):
+                # Fechada pelo usuário e sem atividade desde então: continua fechada.
+                fechadas_na_varredura.add(chave)
+                continue
             if chave not in anteriores and banco.fechou_desde(*chave, agora):
                 # O hook registrou o fechamento enquanto esta rodada varria os processos: a
                 # varredura viu o processo ainda saindo. Sem isso a sessão "reabriria" e, se a
@@ -120,10 +136,29 @@ def registrar_fechamento(banco: Banco, provedor: str, session_id: str, agora: in
     return True
 
 
+def fechar_manualmente(banco: Banco, provedor: str, session_id: str, agora: int,
+                       boot_id: str) -> bool:
+    """O usuário diz que a sessão acabou (provedor sem processo para observar, como o opencode).
+
+    Devolve False se ela não estava aberta. A marca faz a próxima coleta não a reabrir, a menos
+    que tenha atividade depois de agora.
+    """
+    with banco.transacao():
+        banco.marcar_fechamento_manual(provedor, session_id, agora)
+        viva = next((v for v in banco.vivas()
+                     if (v["provedor"], v["session_id"]) == (provedor, session_id)), None)
+        if viva is None:
+            return False
+        banco.registrar_evento(agora, "fechou", provedor, session_id, viva["pid"], viva["tty"],
+                               boot_id)
+        banco.remover_viva(provedor, session_id)
+    return True
+
+
 def _resolver_tmux(sessoes: Iterable[SessaoViva],
                    tmux_de: Callable[[int], dict | None]) -> dict[int, dict]:
     por_pid: dict[int, dict] = {}
-    for pid in {s.pid for s in sessoes}:  # o codex tem várias threads no mesmo processo
+    for pid in {s.pid for s in sessoes if s.pid > 0}:  # codex: várias threads, um processo
         try:
             achado = tmux_de(pid)
         except Exception:

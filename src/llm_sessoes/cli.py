@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import provedores, reabrir, relatorio, sistema
 from .banco import Banco, caminho_padrao
-from .coletor import coletar, registrar_fechamento
+from .coletor import coletar, fechar_manualmente, registrar_fechamento
 
 MARCA_CRON = "# llm-sessoes"
 INTERVALO_CRON_MIN = 2
@@ -55,6 +55,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("tui", help="interface para buscar, marcar e reabrir sessões (requer Textual)")
 
+    p = sub.add_parser("opencode", help="sessões do opencode (sem processo para observar, "
+                                         "o fechamento é manual ou por inatividade)")
+    p.add_argument("acao", choices=["fechar"])
+    p.add_argument("prefixo", metavar="prefixo-do-id")
+
     sub.add_parser("enviar", help="envia o retrato das sessões ao painel central (se configurado)")
 
     p = sub.add_parser("central", help="servidor do painel central (recebe os relatórios)")
@@ -88,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return {"coletar": _coletar, "status": _status,
                 "fechadas": _fechadas, "crash": _crash,
-                "reabrir": _reabrir, "_aba": _aba, "enviar": _enviar}[args.comando](banco, args)
+                "reabrir": _reabrir, "_aba": _aba, "enviar": _enviar,
+                "opencode": _opencode}[args.comando](banco, args)
     finally:
         banco.fechar()
 
@@ -109,6 +115,24 @@ def _coletar(banco: Banco, args) -> int:
     # Falha de rede vira só uma linha no coletor.log: não muda o resultado da coleta.
     relatorio.enviar_do_banco(banco, boot, agora)
     return 1 if r.avisos else 0
+
+
+def _opencode(banco: Banco, args) -> int:
+    achadas = [s for s in banco.por_prefixo(args.prefixo) if s["provedor"] == "opencode"]
+    if len(achadas) != 1:
+        print(f"Prefixo '{args.prefixo}': "
+              + ("nenhuma sessão do opencode." if not achadas else "ambíguo:"), file=sys.stderr)
+        for s in achadas:
+            print(f"    {s['session_id']}  {s['titulo'] or '(sem título)'}", file=sys.stderr)
+        return 2
+    sessao = achadas[0]
+    agora, boot = int(time.time()), sistema.boot_id()
+    if fechar_manualmente(banco, "opencode", sessao["session_id"], agora, boot):
+        print(f"Fechada: {_rotulo(sessao)}")
+        relatorio.enviar_do_banco(banco, boot, agora)
+    else:
+        print(f"Não estava aberta: {_rotulo(sessao)} (marcada como fechada mesmo assim)")
+    return 0
 
 
 def _enviar(banco: Banco, args) -> int:
