@@ -253,8 +253,13 @@ sessões ativas (título, projeto/worktree/branch, `trabalhando`/`parada` e há 
 tmux) e as fechadas/crash das últimas 48 h que não foram reabertas. O botão copia:
 
 - sessão viva num tmux: `ssh <maquina> -t tmux attach -t <sessao>`;
-- demais: `ssh <maquina> -t 'cd <dir_resume> && claude --resume <id>'` (`codex resume <id>`
-  para o Codex).
+- demais: abre a sessão num **tmux novo**, por um shell interativo:
+  `ssh <maquina> -t tmux new -A -s claude-a78c1f02 -c <dir_resume> '${SHELL:-zsh} -ic "claude --resume <id>"'`
+  (`codex resume <id>` para o Codex). O shell interativo é necessário porque, por ssh, o
+  `claude` só entra no PATH (e os segredos só são carregados) pelo `.zshrc`; dentro do tmux a
+  sessão sobrevive à queda do ssh; e o `-A` faz um segundo clique reconectar em vez de abrir
+  outra. As aspas são montadas com `shlex` em duas camadas (shell local → ssh → shell remoto),
+  então diretório com espaço ou aspas funciona.
 
 Todo texto vindo das sessões é escapado, e a página sai com uma CSP que só permite o script e
 o estilo dela (nonce por resposta). O nome da máquina só aceita `[A-Za-z0-9._-]` (vira alvo de

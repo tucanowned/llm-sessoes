@@ -1,7 +1,13 @@
 import http.client
 import json
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from llm_sessoes.central import pagina
@@ -234,19 +240,67 @@ class ServidorTest(unittest.TestCase):
 
 
 class PaginaTest(unittest.TestCase):
-    def test_comando_de_retomada_remota(self):
-        s = {"provedor": "claude", "session_id": "abc", "dir_resume": "/home/d/meu repo"}
+    ID = "a78c1f02-0000-4000-8000-000000000001"
 
-        self.assertEqual("ssh pc -t 'cd '\"'\"'/home/d/meu repo'\"'\"' && claude --resume abc'",
-                         pagina.comando_retomar("pc", s))
-        self.assertEqual("ssh pc -t 'cd /r && codex resume t1'", pagina.comando_retomar(
-            "pc", {"provedor": "codex", "session_id": "t1", "dir_resume": "/r"}))
+    def test_retomada_abre_tmux_novo_com_shell_interativo(self):
+        s = {"provedor": "claude", "session_id": self.ID, "dir_resume": "/home/d/repo"}
+
+        self.assertEqual(
+            "ssh pc -t tmux new -A -s claude-a78c1f02 -c /home/d/repo "
+            "''\"'\"'${SHELL:-zsh} -ic '\"'\"'\"'\"'\"'\"'\"'\"'claude --resume "
+            f"{self.ID}'\"'\"'\"'\"'\"'\"'\"'\"''\"'\"''",
+            pagina.comando_retomar("pc", s))
+
+    def test_retomada_com_espaco_e_aspas_simples_no_diretorio(self):
+        diretorio = "/home/d/meu repo/it's here"
+        s = {"provedor": "codex", "session_id": self.ID, "dir_resume": diretorio}
+
+        comando = pagina.comando_retomar("pc", s)
+
+        # Camada 1, o shell local: separa os argumentos do ssh.
+        local = shlex.split(comando)
+        self.assertEqual(["ssh", "pc", "-t"], local[:3])
+        # Camada 2: o ssh junta o resto com espaço e o shell remoto separa de novo.
+        remoto = shlex.split(" ".join(local[3:]))
+        self.assertEqual(["tmux", "new", "-A", "-s", "codex-a78c1f02", "-c", diretorio,
+                          f"${{SHELL:-zsh}} -ic 'codex resume {self.ID}'"], remoto)
+        # Camada 3: o tmux entrega a string ao shell, que chama o shell interativo.
+        self.assertEqual(["${SHELL:-zsh}", "-ic", f"codex resume {self.ID}"],
+                         shlex.split(remoto[-1]))
+
+    @unittest.skipUnless(shutil.which("sh"), "precisa de um sh")
+    def test_retomada_passa_por_shells_de_verdade(self):
+        """Cola o comando num sh real, com ssh, tmux e o shell do usuário trocados por scripts
+        que fazem o mesmo com os argumentos: o ssh junta tudo depois do `-t` com espaço e
+        entrega a um shell novo; o tmux roda a string do comando com o shell padrão."""
+        diretorio = "/tmp/meu repo/it's \"aqui\" $HOME"
+        comando = pagina.comando_retomar("pc", {"provedor": "claude", "session_id": self.ID,
+                                                "dir_resume": diretorio})
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_ = Path(tmp)
+            scripts = {
+                "ssh": 'shift 2; exec sh -c "$*"',
+                "tmux": 'printf "dir=%s\\n" "$6"; exec sh -c "$7"',
+                "zsh-falso": 'printf "argv=%s|%s\\n" "$1" "$2"',
+            }
+            for nome, corpo in scripts.items():
+                (bin_ / nome).write_text(f"#!/bin/sh\n{corpo}\n")
+                (bin_ / nome).chmod(0o755)
+            saida = subprocess.run(
+                ["sh", "-c", comando], capture_output=True, text=True, timeout=10,
+                env={"PATH": f"{bin_}:{os.environ['PATH']}", "SHELL": str(bin_ / "zsh-falso"),
+                     "HOME": "/nao-expandir"}).stdout
+
+        self.assertEqual(f"dir={diretorio}\nargv=-ic|claude --resume {self.ID}\n", saida)
 
     def test_sessao_no_tmux_copia_o_attach(self):
         s = {"provedor": "claude", "session_id": "abc", "dir_resume": "/r",
              "tmux": {"sessao": "dev", "janela": 2, "painel": "%3"}}
 
         self.assertEqual("ssh pc -t tmux attach -t dev", pagina.comando_retomar("pc", s))
+        s["tmux"]["sessao"] = "meu projeto"
+        self.assertEqual(["tmux", "attach", "-t", "meu projeto"],
+                         shlex.split(" ".join(shlex.split(pagina.comando_retomar("pc", s))[3:])))
 
     def test_provedor_desconhecido_fica_sem_botao(self):
         self.assertIsNone(pagina.comando_retomar("pc", {"provedor": "x", "session_id": "a",

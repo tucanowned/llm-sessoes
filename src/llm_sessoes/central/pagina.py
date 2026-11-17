@@ -5,6 +5,7 @@ Títulos, mensagens e caminhos vêm das sessões (conteúdo arbitrário): tudo p
 
 from __future__ import annotations
 
+import re
 import shlex
 from html import escape
 from pathlib import PurePosixPath
@@ -155,18 +156,43 @@ def renderizar(maquinas: list[dict], resumo: dict, agora: int, nonce: str) -> st
 
 
 def comando_retomar(maquina: str, sessao: dict) -> str | None:
-    """O que o botão copia: anexar ao tmux onde a sessão está viva, ou retomá-la remotamente."""
+    """O que o botão copia: anexar ao tmux onde a sessão está viva, ou retomá-la num tmux novo.
+
+    O resume roda por um shell interativo (`$SHELL -ic`) porque, por ssh sem tty interativo, o
+    `claude` não está no PATH e os segredos do ~/.zshrc não são carregados. Dentro do tmux a
+    sessão sobrevive à queda do ssh, e o `-A` faz um segundo clique reconectar em vez de abrir
+    outra.
+    """
     tmux = sessao.get("tmux")
     if tmux and tmux.get("sessao"):
-        return f"ssh {shlex.quote(maquina)} -t tmux attach -t {shlex.quote(tmux['sessao'])}"
+        return _ssh(maquina, ["tmux", "attach", "-t", tmux["sessao"]])
     try:
         resume = provedores.por_nome(sessao["provedor"]).comando_resume(sessao["session_id"])
     except KeyError:
         return None  # provedor que este servidor não conhece
     if not sessao.get("dir_resume"):
         return None
-    interno = f"cd {shlex.quote(sessao['dir_resume'])} && {shlex.join(resume)}"
-    return f"ssh {shlex.quote(maquina)} -t {shlex.quote(interno)}"
+    # O tmux roda esta string com o shell padrão dele; o $SHELL fica sem aspas para expandir lá.
+    interativo = f"${{SHELL:-zsh}} -ic {shlex.quote(shlex.join(resume))}"
+    return _ssh(maquina, ["tmux", "new", "-A", "-s", nome_tmux(sessao), "-c",
+                          sessao["dir_resume"], interativo])
+
+
+def nome_tmux(sessao: dict) -> str:
+    """`claude-a78c1f02`: provedor + começo do id, só com o que o tmux aceita em nome de sessão."""
+    bruto = f"{sessao['provedor']}-{sessao['session_id'][:8]}"
+    return re.sub(r"[^A-Za-z0-9_-]", "_", bruto)
+
+
+def _ssh(maquina: str, remoto: list[str]) -> str:
+    """`ssh <maquina> -t <argv remoto>` pronto para colar num shell.
+
+    São duas camadas de shell: a local separa os argumentos do ssh, e o ssh os junta com espaço
+    numa linha que o shell remoto separa de novo. Por isso cada argumento remoto leva aspas
+    duas vezes (quando não precisa de aspas, fica igual: `tmux new -A …` continua legível).
+    """
+    return shlex.join(["ssh", maquina, "-t"]) + " " + " ".join(
+        shlex.quote(shlex.quote(arg)) for arg in remoto)
 
 
 def ha_quanto(quando: int | None, agora: int) -> str:
