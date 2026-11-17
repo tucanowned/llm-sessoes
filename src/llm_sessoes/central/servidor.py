@@ -20,6 +20,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from . import pagina
 from .armazem import Armazem, RelatorioInvalido, validar
@@ -69,7 +70,8 @@ class Handler(BaseHTTPRequestHandler):
                 maquinas = self.server.armazem.painel(agora)
                 resumo = self.server.armazem.resumo(agora)
             nonce = secrets.token_urlsafe(16)
-            html = pagina.renderizar(maquinas, resumo, agora, nonce)
+            aba = parse_qs(urlsplit(self.path).query).get("aba", [None])[0]
+            html = pagina.renderizar(maquinas, resumo, agora, nonce, aba)
             self._responder(HTTPStatus.OK, html.encode(), "text/html; charset=utf-8", {
                 "Content-Security-Policy": (f"default-src 'none'; style-src 'nonce-{nonce}'; "
                                             f"script-src 'nonce-{nonce}'; base-uri 'none'; "
