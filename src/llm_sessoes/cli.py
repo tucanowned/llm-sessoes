@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import provedores, reabrir, sistema
+from . import provedores, reabrir, relatorio, sistema
 from .banco import Banco, caminho_padrao
 from .coletor import coletar, registrar_fechamento
 
@@ -55,6 +55,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("tui", help="interface para buscar, marcar e reabrir sessões (requer Textual)")
 
+    sub.add_parser("enviar", help="envia o retrato das sessões ao painel central (se configurado)")
+
+    p = sub.add_parser("central", help="servidor do painel central (recebe os relatórios)")
+    p.add_argument("--endereco", default=os.environ.get("LLM_SESSOES_ENDERECO", "0.0.0.0"))
+    p.add_argument("--porta", type=int, default=int(os.environ.get("LLM_SESSOES_PORTA", 8080)))
+    p.add_argument("--banco", default=os.environ.get("LLM_SESSOES_CENTRAL_DB", "/data/central.db"))
+
     p = sub.add_parser("cron", help="agenda/remove a coleta periódica")
     p.add_argument("acao", choices=["instalar", "remover", "ver"])
 
@@ -63,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cron(args.acao)
     if args.comando == "tui":
         return _tui()
+    if args.comando == "central":
+        return _central(args)
 
     if args.comando in ("aviso", "hook"):
         # Rodam dentro do shell e do Claude Code: nunca podem atrapalhar quem os chamou.
@@ -79,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return {"coletar": _coletar, "status": _status,
                 "fechadas": _fechadas, "crash": _crash,
-                "reabrir": _reabrir, "_aba": _aba}[args.comando](banco, args)
+                "reabrir": _reabrir, "_aba": _aba, "enviar": _enviar}[args.comando](banco, args)
     finally:
         banco.fechar()
 
@@ -88,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _coletar(banco: Banco, args) -> int:
-    r = coletar(banco, provedores.todos(), int(time.time()), sistema.boot_id())
+    agora, boot = int(time.time()), sistema.boot_id()
+    r = coletar(banco, provedores.todos(), agora, boot, tmux_de=sistema.tmux_do_processo)
     if args.verbose or r.abriram or r.fecharam or r.crash or r.avisos or r.notas:
         print(f"{_hora(time.time())} vivas={r.vivas} abriram={len(r.abriram)} "
               f"fecharam={len(r.fecharam)} crash={len(r.crash)}")
@@ -96,7 +106,24 @@ def _coletar(banco: Banco, args) -> int:
         print(f"  nota: {nota}")
     for aviso in r.avisos:
         print(f"  AVISO: {aviso}", file=sys.stderr)
+    # Falha de rede vira só uma linha no coletor.log: não muda o resultado da coleta.
+    relatorio.enviar_do_banco(banco, boot, agora)
     return 1 if r.avisos else 0
+
+
+def _enviar(banco: Banco, args) -> int:
+    config = relatorio.carregar_config()
+    if config is None:
+        return 0  # painel central não configurado: nada a fazer
+    try:
+        relatorio.enviar(config, relatorio.montar(banco, config.maquina, sistema.boot_id(),
+                                                  int(time.time())))
+    except relatorio.ErroEnvio as erro:
+        relatorio.anotar_no_log(f"enviar ao painel central falhou: {erro}")
+        print(f"ERRO ao enviar para {config.url}: {erro}", file=sys.stderr)
+        return 1
+    print(f"enviado para {config.url} como {config.maquina}.")
+    return 0
 
 
 def _status(banco: Banco, args) -> int:
@@ -195,7 +222,8 @@ def _aviso(banco: Banco, args) -> int:
         return 0
     if banco.meta("boot_id") != boot:
         # Primeiro shell antes da primeira rodada do cron: é esta coleta que registra o crash.
-        coletar(banco, provedores.todos(), int(time.time()), boot)
+        coletar(banco, provedores.todos(), int(time.time()), boot,
+                tmux_de=sistema.tmux_do_processo)
     with banco.con:
         banco.definir_meta("aviso_boot", boot)
     recente = time.time() - AVISO_CRASH_DIAS * 86400
@@ -216,8 +244,20 @@ def _aviso(banco: Banco, args) -> int:
 def _hook(banco: Banco, args) -> int:
     evento = json.load(sys.stdin)
     if evento.get("hook_event_name") == "SessionEnd" and evento.get("session_id"):
-        registrar_fechamento(banco, args.provedor, evento["session_id"], int(time.time()),
-                             sistema.boot_id())
+        agora, boot = int(time.time()), sistema.boot_id()
+        if registrar_fechamento(banco, args.provedor, evento["session_id"], agora, boot):
+            relatorio.enviar_do_banco(banco, boot, agora)
+    return 0
+
+
+def _central(args) -> int:
+    from .central.servidor import rodar
+
+    tokens = [t.strip() for t in os.environ.get("LLM_SESSOES_TOKENS", "").split(",") if t.strip()]
+    if not tokens:
+        print("Defina LLM_SESSOES_TOKENS (tokens aceitos, separados por vírgula).", file=sys.stderr)
+        return 2
+    rodar(args.endereco, args.porta, args.banco, tokens)
     return 0
 
 
@@ -254,7 +294,7 @@ def _cron(acao: str) -> int:
     linhas = [l for l in linhas if MARCA_CRON not in l]
     if acao == "instalar":
         executavel = Path(__file__).resolve().parents[2] / "bin" / "llm-sessoes"
-        log = Path.home() / ".local/state/llm-sessoes/coletor.log"
+        log = relatorio.caminho_log()
         log.parent.mkdir(parents=True, exist_ok=True)
         linhas.append(f"*/{INTERVALO_CRON_MIN} * * * * {shlex.quote(str(executavel))} coletar "
                       f">> {shlex.quote(str(log))} 2>&1 {MARCA_CRON}")

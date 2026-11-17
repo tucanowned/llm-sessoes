@@ -1,13 +1,14 @@
 import contextlib
 import io
 import os
+import socket
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from llm_sessoes import cli, reabrir
+from llm_sessoes import cli, reabrir, relatorio
 from llm_sessoes.banco import Banco
 from llm_sessoes.coletor import coletar
 from llm_sessoes.modelos import SessaoViva
@@ -33,8 +34,13 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.caminho = Path(self.tmp.name) / "sub" / "sessoes.db"
-        self.env = mock.patch.dict(os.environ, {"LLM_SESSOES_DB": str(self.caminho)})
+        # HOME/XDG_CONFIG_HOME no temporário: nenhum teste pode achar o central.env de verdade.
+        self.env = mock.patch.dict(os.environ, {"LLM_SESSOES_DB": str(self.caminho),
+                                                "HOME": self.tmp.name,
+                                                "XDG_CONFIG_HOME": self.tmp.name})
         self.env.start()
+        for chave in ("LLM_SESSOES_CENTRAL_URL", "LLM_SESSOES_TOKEN", "LLM_SESSOES_MAQUINA"):
+            os.environ.pop(chave, None)
         self.agora = int(time.time())
 
     def tearDown(self):
@@ -248,6 +254,50 @@ class CliTest(unittest.TestCase):
         self.assertEqual(0, self.hook("isto não é json"))
         self.assertEqual(0, self.hook('{"hook_event_name": "SessionEnd", "session_id": "nunca-vi"}'))
         self.assertEqual(0, self.hook('{"hook_event_name": "Stop", "session_id": "x"}'))
+
+    # --- painel central -------------------------------------------------------------
+
+    def test_enviar_sem_configuracao_nao_faz_nada(self):
+        with mock.patch.object(relatorio, "enviar") as enviar:
+            self.assertEqual((0, ""), self.rodar("enviar"))
+        enviar.assert_not_called()
+
+    def test_enviar_com_rede_fora_sai_com_erro_e_anota_no_log(self):
+        os.environ["LLM_SESSOES_CENTRAL_URL"] = f"http://127.0.0.1:{_porta_livre()}"
+        erro = io.StringIO()
+        with contextlib.redirect_stderr(erro):
+            codigo, _ = self.rodar("enviar")
+
+        self.assertEqual(1, codigo)
+        self.assertIn("ERRO ao enviar", erro.getvalue())
+        self.assertIn("falhou", relatorio.caminho_log().read_text())
+
+    def test_coletar_envia_no_fim_e_falha_de_rede_nao_muda_o_resultado(self):
+        os.environ["LLM_SESSOES_CENTRAL_URL"] = f"http://127.0.0.1:{_porta_livre()}"
+        with mock.patch.object(cli.provedores, "todos", return_value=[ProvedorFalso([])]), \
+                mock.patch.object(cli.sistema, "boot_id", return_value="boot-1"):
+            codigo, _ = self.rodar("coletar")
+
+        self.assertEqual(0, codigo)
+        self.assertIn("enviar ao painel central falhou", relatorio.caminho_log().read_text())
+
+    def test_hook_envia_o_retrato_depois_do_fechamento(self):
+        self.coletar([sessao("id-a", "Fechei agora", 10)], self.agora - 60)
+        os.environ["LLM_SESSOES_CENTRAL_URL"] = "http://central"
+        with mock.patch.object(relatorio, "enviar") as enviar:
+            self.hook('{"hook_event_name": "SessionEnd", "session_id": "id-a"}')
+
+        [(config, payload), _] = enviar.call_args
+        self.assertEqual("http://central", config.url)
+        self.assertEqual([], payload["vivas"])
+        self.assertEqual("fechou", payload["eventos"][-1]["tipo"])
+
+
+def _porta_livre() -> int:
+    """Porta sem ninguém escutando: a conexão é recusada na hora."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 if __name__ == "__main__":

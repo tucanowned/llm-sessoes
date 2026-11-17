@@ -1,0 +1,7 @@
+.git
+.venv
+.playwright-mcp
+tests
+**/__pycache__
+*.db
+*.db-*

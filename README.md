@@ -96,6 +96,8 @@ bin/llm-sessoes crash            # sessões que estavam abertas no último crash
 bin/llm-sessoes reabrir --crash  # reabre as pendentes do último crash, uma aba por sessão
 bin/llm-sessoes tui              # interface: buscar, marcar e reabrir (requer Textual)
 bin/llm-sessoes cron instalar    # agenda a coleta a cada 2 minutos (cron remover desfaz)
+bin/llm-sessoes enviar           # manda o retrato ao painel central (se configurado)
+bin/llm-sessoes central          # servidor do painel central (normalmente via Docker)
 ```
 
 Para ter o comando no PATH: `ln -s "$PWD/bin/llm-sessoes" ~/.local/bin/llm-sessoes`.
@@ -179,6 +181,113 @@ com `.venv/bin/python` para incluí-los.
 
 Banco em `~/.local/share/llm-sessoes/sessoes.db` (sobrescreva com `LLM_SESSOES_DB`).
 
+## Painel central
+
+Cada máquina envia o estado das suas sessões para um servidor no orbit, que mostra numa página
+as sessões ativas e as recentes de todas as máquinas — com o comando pronto para retomar
+cada uma por ssh.
+
+```
+máquina A ─┐  POST /api/v1/relatorio (Bearer)
+máquina B ─┼──────────────────────────────────→  llm-sessoes central  →  página / + /api/v1/resumo
+máquina C ─┘  retrato completo a cada coleta       (SQLite em /data)       (widget do Homepage)
+```
+
+### Cliente
+
+Configuração por variáveis de ambiente ou, como fallback, em `~/.config/llm-sessoes/central.env`
+(formato `CHAVE=valor`; a variável de ambiente ganha do arquivo):
+
+```bash
+# ~/.config/llm-sessoes/central.env
+LLM_SESSOES_CENTRAL_URL=https://sessoes.orbit.diegolabs.dev
+LLM_SESSOES_TOKEN=<um dos tokens do servidor>
+# LLM_SESSOES_MAQUINA=notebook   # padrão: hostname. É o alvo do `ssh` no comando copiado
+```
+
+Sem URL, nada muda: `llm-sessoes enviar` não faz nada e sai com 0. Com URL, o envio acontece
+sozinho **no fim de cada `coletar`** (cron) e **no hook `SessionEnd`** do Claude Code; o comando
+`enviar` serve para testar à mão (sai com 1 e mostra o erro se falhar).
+
+- Cada envio é um **retrato completo** (idempotente): sessões vivas, eventos das últimas 48 h
+  (`abriu`/`fechou`/`crash`) e as anomalias dos provedores. O servidor substitui o estado da
+  máquina, então um envio perdido se corrige no seguinte.
+- Timeout de 5 s. Falha de rede vira **uma linha no `coletor.log`** e nunca derruba a coleta
+  nem muda o código de saída dela.
+- **tmux**: a coleta lê `TMUX` e `TMUX_PANE` em `/proc/<pid>/environ` do processo da sessão e
+  resolve com `tmux -S <socket> display -p -t <painel> '#S:#I'`. Fica gravado no banco local
+  (a TUI mostra no detalhe) e vai no relatório.
+- Status (`trabalhando`/`parada`) só existe para o Claude Code (`busy`/`idle` do arquivo de
+  sessão); "última atividade" é o mtime do arquivo da conversa.
+
+Formato do relatório (`versao_esquema: 1`, horários em epoch UTC):
+
+```jsonc
+{ "versao_esquema": 1, "maquina": "notebook", "boot_id": "…", "coletado_em": 1763400000,
+  "versao_cliente": "0.2.0",
+  "vivas":   [ { "provedor": "claude", "id": "…", "titulo": "…", "ultima_msg": "… (≤300)",
+                 "dir_resume": "…", "dir_trabalho": "…", "branch": "…",
+                 "status": "trabalhando" | "parada" | null, "inicio": 0, "ultima_atividade": 0,
+                 "tmux": { "sessao": "dev", "janela": 2, "painel": "%3" } | null } ],
+  "eventos": [ { "tipo": "abriu" | "fechou" | "crash", "quando": 0, /* + campos da sessão */ } ],
+  "anomalias": [ "codex: processo codex pid=… sem thread-writer-lock …" ] }
+```
+
+### Servidor
+
+`llm-sessoes central` — `ThreadingHTTPServer` na porta 8080, SQLite em `/data/central.db`, só
+stdlib. Variáveis: `LLM_SESSOES_TOKENS` (obrigatória; tokens aceitos, separados por vírgula),
+e opcionalmente `LLM_SESSOES_PORTA`, `LLM_SESSOES_ENDERECO`, `LLM_SESSOES_CENTRAL_DB` (ou
+`--porta`, `--endereco`, `--banco`).
+
+| Rota | |
+|---|---|
+| `POST /api/v1/relatorio` | retrato de uma máquina. `401` sem token válido, `413` acima de 1 MB (recusado pelo `Content-Length`, sem ler o corpo), `400` se o formato não bate |
+| `GET /` | a página (auto-refresh de 30 s, tema Catppuccin) |
+| `GET /api/v1/resumo` | `{ativas, maquinas_online, maquinas_total, crashes_24h}` |
+| `GET /healthz` | `200 ok` |
+
+A página tem um bloco por máquina — **online/offline** (offline = sem relatório há mais de
+5 min, pelo relógio do servidor) e "último envio há X" —, com as anomalias em destaque, as
+sessões ativas (título, projeto/worktree/branch, `trabalhando`/`parada` e há quanto tempo,
+tmux) e as fechadas/crash das últimas 48 h que não foram reabertas. O botão copia:
+
+- sessão viva num tmux: `ssh <maquina> -t tmux attach -t <sessao>`;
+- demais: `ssh <maquina> -t 'cd <dir_resume> && claude --resume <id>'` (`codex resume <id>`
+  para o Codex).
+
+Todo texto vindo das sessões é escapado, e a página sai com uma CSP que só permite o script e
+o estilo dela (nonce por resposta). O nome da máquina só aceita `[A-Za-z0-9._-]` (vira alvo de
+`ssh`). Eventos com mais de 30 dias são apagados. Ativas de máquina offline não contam no
+resumo (são um retrato velho).
+
+**A página e o `/api/v1/resumo` não têm autenticação** — mostram títulos e caminhos das
+sessões. Exponha só na rede do Tailscale.
+
+#### Deploy (Docker)
+
+```bash
+cp compose.example.yml compose.yml
+echo "LLM_SESSOES_TOKENS=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" > .env
+docker compose up -d --build
+```
+
+A imagem (`python:3.12-slim`, usuário `sessoes` sem root, `VOLUME /data`, `EXPOSE 8080`) tem
+healthcheck no `/healthz`. Widget do Homepage:
+
+```yaml
+- Sessões LLM:
+    href: https://sessoes.orbit.diegolabs.dev
+    widget:
+      type: customapi
+      url: http://llm-sessoes:8080/api/v1/resumo
+      refreshInterval: 30000
+      mappings:
+        - { field: ativas, label: Ativas }
+        - { field: maquinas_online, label: Online }
+        - { field: crashes_24h, label: Crashes 24h }
+```
+
 ## Testes
 
 Rode da raiz do repositório. O `PYTHONPATH=src` é necessário porque o pacote fica em `src/`
@@ -197,3 +306,4 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v # suíte comple
 - [x] Reabrir em abas do Windows Terminal (`wt.exe new-tab`) — módulo `reabrir` + CLI
 - [x] Aviso de crash no primeiro shell após o boot (`llm-sessoes aviso`)
 - [x] Hook `SessionEnd` do Claude Code para registrar fechamento na hora (`llm-sessoes hook claude`)
+- [x] Painel central: `llm-sessoes enviar` em cada máquina + `llm-sessoes central` no orbit (Docker)

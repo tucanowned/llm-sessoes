@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Iterable, Protocol
 
@@ -29,7 +30,9 @@ class Resultado:
     """Informativo (ex.: versão nova de uma ferramenta) — não indica problema."""
 
 
-def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: str) -> Resultado:
+def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: str,
+            tmux_de: Callable[[int], dict | None] | None = None) -> Resultado:
+    """`tmux_de(pid)` diz em que sessão do tmux o processo roda (ver `sistema.tmux_do_processo`)."""
     resultado = Resultado()
 
     atuais: dict[tuple[str, str], SessaoViva] = {}
@@ -48,6 +51,9 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
                 provedores_ok.add(provedor.nome)
         except Exception as erro:  # um provedor quebrado não pode derrubar a coleta dos outros
             resultado.avisos.append(f"provedor {provedor.nome} falhou: {erro!r}")
+
+    # Fora da transação: são subprocessos (tmux display) e não devem segurar o lock do banco.
+    tmux = _resolver_tmux(atuais.values(), tmux_de) if tmux_de else {}
 
     with banco.transacao():  # transação única: ou a rodada inteira entra, ou nada
         boot_anterior = banco.meta("boot_id")
@@ -85,7 +91,7 @@ def coletar(banco: Banco, provedores: Iterable[Provedor], agora: int, boot_id: s
             if chave not in anteriores:
                 banco.registrar_evento(agora, "abriu", *chave, sessao.pid, sessao.tty, boot_id)
                 resultado.abriram.append(chave)
-            banco.salvar_viva(sessao, agora)
+            banco.salvar_viva(sessao, agora, tmux.get(sessao.pid))
 
         _anotar_versoes(banco, atuais.values(), resultado)
         banco.definir_meta("avisos", json.dumps(resultado.avisos))
@@ -112,6 +118,19 @@ def registrar_fechamento(banco: Banco, provedor: str, session_id: str, agora: in
         banco.registrar_evento(agora, "fechou", provedor, session_id, viva["pid"], viva["tty"], boot_id)
         banco.remover_viva(provedor, session_id)
     return True
+
+
+def _resolver_tmux(sessoes: Iterable[SessaoViva],
+                   tmux_de: Callable[[int], dict | None]) -> dict[int, dict]:
+    por_pid: dict[int, dict] = {}
+    for pid in {s.pid for s in sessoes}:  # o codex tem várias threads no mesmo processo
+        try:
+            achado = tmux_de(pid)
+        except Exception:
+            continue  # tmux é informação acessória: nunca derruba a coleta
+        if achado:
+            por_pid[pid] = achado
+    return por_pid
 
 
 def _anotar_versoes(banco: Banco, sessoes: Iterable[SessaoViva], resultado: Resultado) -> None:

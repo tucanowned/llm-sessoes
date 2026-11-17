@@ -1,0 +1,20 @@
+# Exemplo para o orbit. Copie para compose.yml e ajuste.
+# Gere um token por máquina:  python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+services:
+  llm-sessoes:
+    build: .
+    image: llm-sessoes-central:0.2.0
+    container_name: llm-sessoes
+    restart: unless-stopped
+    environment:
+      # Tokens aceitos, separados por vírgula (um por máquina facilita revogar).
+      LLM_SESSOES_TOKENS: "${LLM_SESSOES_TOKENS:?defina no .env}"
+    volumes:
+      - dados:/data
+    # A página não tem login: exponha só na rede do Tailscale / atrás do proxy reverso
+    # (ex.: https://sessoes.orbit.diegolabs.dev). Aqui, só no loopback do host.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  dados:

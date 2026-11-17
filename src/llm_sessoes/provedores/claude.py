@@ -86,10 +86,10 @@ class ProvedorClaude:
             provedor=self.nome, session_id=session_id, pid=pid, dir_resume=dir_resume,
             dir_trabalho=meta.get("cwd"), tty=tty, status=status,
             titulo=meta.get("titulo"), branch=meta.get("branch"), ultima_msg=meta.get("ultima_msg"),
-            versao=versao,
+            versao=versao, ultima_atividade=meta.get("mtime"),
         )
 
-    def _metadados(self, session_id: str) -> dict[str, str]:
+    def _metadados(self, session_id: str) -> dict:
         if not UUID.match(session_id):
             return {}
         arquivo = next(iter(self.dir_projetos.glob(f"*/{session_id}.jsonl")), None)
@@ -97,11 +97,12 @@ class ProvedorClaude:
             return {}  # sessão recém-aberta, ainda sem conversa gravada
 
         # As conversas chegam a centenas de MB: lê-se só a cauda, ampliando se o título não vier.
-        tamanho = arquivo.stat().st_size
+        info = arquivo.stat()
         cauda = CAUDA_INICIAL
         while True:
-            meta = _extrair(sistema.ler_cauda(arquivo, cauda))
-            if "titulo" in meta or cauda >= min(tamanho, CAUDA_MAXIMA):
+            meta: dict = _extrair(sistema.ler_cauda(arquivo, cauda))
+            if "titulo" in meta or cauda >= min(info.st_size, CAUDA_MAXIMA):
+                meta["mtime"] = int(info.st_mtime)
                 return meta
             cauda *= 4
 
