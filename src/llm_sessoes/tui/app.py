@@ -11,6 +11,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Input, Static
@@ -190,7 +191,10 @@ class SessoesApp(App):
 
     def _ajustar_colunas(self) -> None:
         """O título fica com a largura que sobrar das colunas fixas."""
-        tabela = self.query_one(DataTable)
+        try:
+            tabela = self.query_one(DataTable)
+        except NoMatches:
+            return  # o timer disparou com a app já fechando: não há mais tabela para ajustar
         fixas = sum(c.width for chave, c in tabela.columns.items() if chave.value != "titulo")
         respiro = 2 * tabela.cell_padding * len(tabela.columns) + 1  # +1: barra de rolagem
         largura = max(16, tabela.size.width - fixas - respiro)

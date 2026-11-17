@@ -154,5 +154,13 @@ class SessoesAppTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(7, len(self.pedidos[0]))
 
 
+    async def test_ajuste_de_colunas_depois_que_a_tabela_saiu_da_tela(self):
+        # O ajuste roda num timer de 0,1 s (depois do layout). Se a app fecha antes disso — sair
+        # logo após abrir ou redimensionar —, o timer encontra a tela já desmontada.
+        async with self.app().run_test() as pilot:
+            await pilot.app.query_one("DataTable").remove()
+
+            pilot.app._ajustar_colunas()  # não pode levantar NoMatches
+
 if __name__ == "__main__":
     unittest.main()
