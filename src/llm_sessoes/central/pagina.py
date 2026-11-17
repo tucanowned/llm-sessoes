@@ -13,6 +13,8 @@ from pathlib import PurePosixPath
 from .. import __version__, provedores
 
 ATUALIZAR_A_CADA = 30
+ABAS = {"ativas": "Ativas", "recentes": "Fechadas e crash"}
+ABA_PADRAO = "ativas"
 
 ESTILO = """
 :root {
@@ -36,6 +38,24 @@ header.topo h1 { margin: 0; font-size: 20px; color: var(--mauve); font-weight: 6
 .numeros b { color: var(--text); font-variant-numeric: tabular-nums; }
 .numeros .alerta b { color: var(--red); }
 .atualizado { margin-left: auto; color: var(--overlay0); font-size: 12px; }
+nav.abas { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--surface0); }
+nav.abas a { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px;
+  color: var(--subtext0); text-decoration: none; font-weight: 600; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; border-radius: 6px 6px 0 0; }
+nav.abas a:hover { color: var(--text); background: var(--base); }
+nav.abas a:focus-visible { outline: 2px solid var(--mauve); outline-offset: -2px; }
+nav.abas a[aria-current="page"] { color: var(--mauve); border-bottom-color: var(--mauve); }
+nav.abas .n { font-size: 12px; font-variant-numeric: tabular-nums; padding: 0 7px;
+  border-radius: 999px; background: var(--surface0); color: var(--subtext1); }
+nav.abas a.alerta .n { background: rgba(243,139,168,.18); color: var(--red); }
+nav.abas .crash24 { font-size: 11.5px; font-weight: 600; color: var(--red); }
+section.maquina.compacta { padding: 9px 16px; }
+.cab .nada-aqui { color: var(--overlay0); font-size: 13px; }
+.cab .sep { color: var(--overlay0); }
+.nota-offline { margin: 8px 0 0; color: var(--overlay0); font-size: 12.5px; }
+.evento { flex: none; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 4px; }
+.evento.crash { color: var(--red); background: rgba(243,139,168,.15); }
+.evento.fechou { color: var(--subtext0); background: var(--surface0); }
 section.maquina { background: var(--base); border: 1px solid var(--surface0);
   border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
 section.maquina.offline { opacity: .72; }
@@ -53,10 +73,7 @@ section.maquina.offline { opacity: .72; }
 .anomalias strong { display: block; margin-bottom: 2px; }
 .anomalias ul { margin: 0; padding-left: 18px; }
 .anomalias li { color: var(--yellow); }
-h3 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .06em;
-  text-transform: uppercase; color: var(--subtext0); }
-h3 .n { color: var(--overlay0); }
-ul.sessoes { list-style: none; margin: 0; padding: 0; }
+ul.sessoes { list-style: none; margin: 10px 0 0; padding: 0; }
 li.sessao { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 9px 10px;
   border-radius: 8px; border-left: 3px solid transparent; }
 li.sessao + li.sessao { border-top: 1px solid var(--surface0); }
@@ -88,7 +105,6 @@ button.copiar { grid-column: 2; grid-row: 1 / span 3; align-self: center; cursor
 button.copiar:hover { background: rgba(203,166,247,.2); }
 button.copiar:focus-visible { outline: 2px solid var(--mauve); outline-offset: 2px; }
 button.copiar.ok { color: var(--green); border-color: rgba(166,227,161,.5); }
-.vazio { color: var(--overlay0); font-size: 13px; padding: 4px 10px; }
 .nada { text-align: center; color: var(--subtext0); padding: 60px 16px; }
 @media (max-width: 600px) {
   li.sessao { grid-template-columns: 1fr; }
@@ -121,8 +137,15 @@ for (const el of document.querySelectorAll('[data-epoch]')) {
 """
 
 
-def renderizar(maquinas: list[dict], resumo: dict, agora: int, nonce: str) -> str:
-    blocos = "\n".join(_maquina(m, agora) for m in maquinas) or (
+def aba_valida(valor: str | None) -> str:
+    """Valor desconhecido (ou ausente) em `?aba=` cai no padrão, sem erro."""
+    return valor if valor in ABAS else ABA_PADRAO
+
+
+def renderizar(maquinas: list[dict], resumo: dict, agora: int, nonce: str,
+               aba: str | None = ABA_PADRAO) -> str:
+    aba = aba_valida(aba)  # daqui em diante só um dos valores conhecidos é reaproveitado
+    blocos = "\n".join(_maquina(m, agora, aba) for m in maquinas) or (
         '<p class="nada">Nenhuma máquina enviou relatório ainda. '
         'Configure o cliente com <code>LLM_SESSOES_CENTRAL_URL</code> e rode '
         '<code>llm-sessoes enviar</code>.</p>')
@@ -132,7 +155,7 @@ def renderizar(maquinas: list[dict], resumo: dict, agora: int, nonce: str) -> st
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="{ATUALIZAR_A_CADA}">
+<meta http-equiv="refresh" content="{ATUALIZAR_A_CADA}; url={_e(_url_aba(aba))}">
 <title>Sessões LLM</title>
 <style nonce="{nonce}">{ESTILO}</style>
 </head>
@@ -147,6 +170,7 @@ def renderizar(maquinas: list[dict], resumo: dict, agora: int, nonce: str) -> st
   </div>
   <span class="atualizado" data-epoch="{agora}">atualiza a cada {ATUALIZAR_A_CADA} s · v{_e(__version__)}</span>
 </header>
+{_abas(maquinas, aba, crashes)}
 {blocos}
 </main>
 <script nonce="{nonce}">{SCRIPT}</script>
@@ -211,7 +235,29 @@ def ha_quanto(quando: int | None, agora: int) -> str:
 # --- partes ------------------------------------------------------------------------------
 
 
-def _maquina(m: dict, agora: int) -> str:
+def _abas(maquinas: list[dict], atual: str, crashes_24h: int) -> str:
+    """Links comuns gerados no servidor: nada de JavaScript (a CSP só libera o script do copiar)."""
+    contagem = {"ativas": sum(len(m["vivas"]) for m in maquinas),
+                "recentes": sum(len(m["recentes"]) for m in maquinas)}
+    links = []
+    for aba, rotulo in ABAS.items():
+        atributos = ' aria-current="page"' if aba == atual else ""
+        alerta = ""
+        if aba == "recentes" and crashes_24h:
+            atributos += ' class="alerta"'
+            alerta = (f' <span class="crash24">● {crashes_24h} crash'
+                      f'{"es" if crashes_24h != 1 else ""} em 24 h</span>')
+        links.append(f'<a href="{_e(_url_aba(aba))}"{atributos}>{_e(rotulo)} '
+                     f'<span class="n">{contagem[aba]}</span>{alerta}</a>')
+    return f'<nav class="abas" aria-label="Abas">{"".join(links)}</nav>'
+
+
+def _url_aba(aba: str) -> str:
+    # Relativa: mantém o caminho atual, e o painel continua funcionando atrás de um prefixo.
+    return f"?aba={aba}"
+
+
+def _maquina(m: dict, agora: int, aba: str) -> str:
     estado = "online" if m["online"] else "offline"
     anomalias = ""
     if m["anomalias"]:
@@ -219,21 +265,32 @@ def _maquina(m: dict, agora: int) -> str:
         anomalias = (f'<div class="anomalias" role="alert"><strong>⚠ Anomalias na última '
                      f'coleta — fechamentos desse provedor não estão sendo registrados</strong>'
                      f'<ul>{itens}</ul></div>')
-    vivas = "".join(_sessao(m["nome"], s, agora, viva=True) for s in m["vivas"])
-    recentes = "".join(_sessao(m["nome"], s, agora, viva=False) for s in m["recentes"])
-    rotulo_vivas = "Ativas" if m["online"] else "Ativas no último envio"
-    return f"""<section class="maquina {estado}">
-  <div class="cab">
-    <h2>{_e(m["nome"])}</h2>
+    viva = aba == "ativas"
+    sessoes = m["vivas"] if viva else m["recentes"]  # recentes já vêm da mais nova à mais antiga
+    cab = f"""<h2>{_e(m["nome"])}</h2>
     <span class="pilula {estado}">{estado}</span>
-    <span class="envio" data-epoch="{m["recebido_em"]}">último envio {ha_quanto(m["recebido_em"], agora)}</span>
-    <span class="versao">{_e(f'cliente v{m["versao_cliente"]}' if m["versao_cliente"] else "")}</span>
+    <span class="envio" data-epoch="{m["recebido_em"]}">último envio {ha_quanto(m["recebido_em"], agora)}</span>"""
+
+    if not sessoes:
+        # Máquina sem nada nesta aba: uma linha, não um bloco vazio.
+        vazio = "nenhuma sessão ativa" if viva else "nada fechado nas últimas 48 h"
+        return f"""<section class="maquina compacta {estado}">
+  <div class="cab">
+    {cab.replace("</h2>", f'</h2><span class="sep">·</span><span class="nada-aqui">{vazio}</span>', 1)}
   </div>
   {anomalias}
-  <h3>{rotulo_vivas} <span class="n">{len(m["vivas"])}</span></h3>
-  {f'<ul class="sessoes">{vivas}</ul>' if vivas else '<p class="vazio">Nenhuma sessão aberta.</p>'}
-  <h3>Fechadas e crash · 48 h <span class="n">{len(m["recentes"])}</span></h3>
-  {f'<ul class="sessoes">{recentes}</ul>' if recentes else '<p class="vazio">Nada nas últimas 48 h.</p>'}
+</section>"""
+
+    itens = "".join(_sessao(m["nome"], s, agora, viva=viva) for s in sessoes)
+    nota = ('<p class="nota-offline">Máquina offline: sessões segundo o último envio.</p>'
+            if viva and not m["online"] else "")
+    return f"""<section class="maquina {estado}">
+  <div class="cab">
+    {cab}
+    <span class="versao">{_e(f'cliente v{m["versao_cliente"]}' if m["versao_cliente"] else "")}</span>
+  </div>
+  {anomalias}{nota}
+  <ul class="sessoes">{itens}</ul>
 </section>"""
 
 
@@ -261,9 +318,8 @@ def _sessao(maquina: str, s: dict, agora: int, viva: bool) -> str:
         classe_li = "trabalhando" if status == "trabalhando" else ""
     else:
         tipo = s["tipo"]
-        texto = "✖ crash" if tipo == "crash" else "fechada"
         partes.append(f'<span class="estado {tipo}" data-epoch="{s["quando"]}">'
-                      f'{texto} {ha_quanto(s["quando"], agora)}</span>')
+                      f'{ha_quanto(s["quando"], agora)}</span>')
         classe_li = "crash" if tipo == "crash" else ""
 
     msg = f'<div class="msg">“{_e(s["ultima_msg"])}”</div>' if s.get("ultima_msg") else ""
@@ -274,9 +330,12 @@ def _sessao(maquina: str, s: dict, agora: int, viva: bool) -> str:
         botao = (f'<button class="copiar" type="button" data-cmd="{_e(comando)}" '
                  f'title="{_e(comando)}">{rotulo}</button>')
     provedor = _e(s["provedor"])
+    evento = ""
+    if not viva:
+        evento = f'<span class="evento {_e(s["tipo"])}">{_e(s["tipo"])}</span>'
     return f"""
     <li class="sessao {classe_li}">
-      <div class="l1"><span class="selo {provedor}">{provedor}</span>{titulo}</div>
+      <div class="l1">{evento}<span class="selo {provedor}">{provedor}</span>{titulo}</div>
       <div class="l2">{"".join(partes)}</div>
       {msg}{botao}
     </li>"""

@@ -243,11 +243,15 @@ e opcionalmente `LLM_SESSOES_PORTA`, `LLM_SESSOES_ENDERECO`, `LLM_SESSOES_CENTRA
 | Rota | |
 |---|---|
 | `POST /api/v1/relatorio` | retrato de uma máquina. `401` sem token válido, `413` acima de 1 MB (recusado pelo `Content-Length`, sem ler o corpo), `400` se o formato não bate |
-| `GET /` | a página (auto-refresh de 30 s, tema Catppuccin) |
+| `GET /?aba=ativas` \| `GET /?aba=recentes` | a página (auto-refresh de 30 s na mesma aba, tema Catppuccin); `?aba` ausente ou inválido = `ativas` |
 | `GET /api/v1/resumo` | `{ativas, maquinas_online, maquinas_total, crashes_24h}` |
 | `GET /healthz` | `200 ok` |
 
-A página tem um bloco por máquina — **online/offline** (offline = sem relatório há mais de
+A página tem duas abas globais, **Ativas** e **Fechadas e crash**, com os contadores somados de
+todas as máquinas; a segunda fica vermelha quando houve crash nas últimas 24 h. São links comuns
+gerados no servidor (sem JavaScript), e a aba fica na URL, então o auto-refresh a mantém. Dentro
+de cada aba há um bloco por máquina só com o conteúdo daquela aba; máquina sem nada na aba vira
+uma linha compacta. A página tem um bloco por máquina — **online/offline** (offline = sem relatório há mais de
 5 min, pelo relógio do servidor) e "último envio há X" —, com as anomalias em destaque, as
 sessões ativas (título, projeto/worktree/branch, `trabalhando`/`parada` e há quanto tempo,
 tmux) e as fechadas/crash das últimas 48 h que não foram reabertas. O botão copia:
